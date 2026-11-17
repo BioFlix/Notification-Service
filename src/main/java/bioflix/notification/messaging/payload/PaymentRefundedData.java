@@ -2,14 +2,17 @@ package bioflix.notification.messaging.payload;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
-/** data of payment.refunded. amount is in minor units (øre). */
+import java.util.UUID;
+
+/** data of payment.refunded. amount in øre. */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record PaymentRefundedData(
         String paymentId,
+        String refundId,
         String bookingId,
-        Long userId,
-        String userEmail,
+        UUID userId,
         Long amount,
-        String currency
+        String currency,
+        String userEmail
 ) implements UserScopedData {
 }

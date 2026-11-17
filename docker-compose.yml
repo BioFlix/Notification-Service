@@ -54,6 +54,7 @@ services:
       RABBITMQ_HOST: rabbitmq
       MAIL_HOST: mailpit
       MAIL_PORT: 1025
+      SMS_ENABLED: ${SMS_ENABLED:-false}
     depends_on:
       notification-db:
         condition: service_healthy

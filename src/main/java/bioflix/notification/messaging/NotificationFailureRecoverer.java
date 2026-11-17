@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Runs when all listener retries for a message are used up (see spring.rabbitmq.listener.simple.retry).
- * Marks the PENDING notifications of the event as FAILED, then rejects the message without requeue,
+ * Marks the QUEUED notifications of the event as FAILED, then rejects the message without requeue,
  * so RabbitMQ moves it to the dead-letter queue. Spring Boot picks this bean up automatically.
  */
 @Component

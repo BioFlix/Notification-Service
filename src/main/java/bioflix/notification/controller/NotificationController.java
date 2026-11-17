@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Read-only view of the notification log. Notifications are only triggered by events.
@@ -33,7 +34,7 @@ public class NotificationController {
 
     /** The caller's own notifications, newest first. */
     @GetMapping("/me")
-    public List<NotificationResponse> mine(@RequestHeader("X-User-Id") Long userId) {
+    public List<NotificationResponse> mine(@RequestHeader("X-User-Id") UUID userId) {
         return notificationService.getForUser(userId);
     }
 
@@ -47,8 +48,8 @@ public class NotificationController {
 
     /** Delivery status of one notification – the owner or an admin. */
     @GetMapping("/{id}")
-    public NotificationResponse byId(@PathVariable Long id,
-                                     @RequestHeader("X-User-Id") Long userId,
+    public NotificationResponse byId(@PathVariable UUID id,
+                                     @RequestHeader("X-User-Id") UUID userId,
                                      @RequestHeader(value = "X-User-Role", required = false) String role) {
         NotificationResponse notification = notificationService.getById(id);
         if (!ADMIN.equalsIgnoreCase(role) && !notification.userId().equals(userId)) {
@@ -58,7 +59,7 @@ public class NotificationController {
     }
 
     @GetMapping("/users/{userId}")
-    public List<NotificationResponse> forUser(@PathVariable Long userId,
+    public List<NotificationResponse> forUser(@PathVariable UUID userId,
                                               @RequestHeader(value = "X-User-Role", required = false) String role) {
         requireAdmin(role);
         return notificationService.getForUser(userId);

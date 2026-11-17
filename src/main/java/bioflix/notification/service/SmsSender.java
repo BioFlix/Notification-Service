@@ -13,7 +13,9 @@ public class SmsSender {
 
     private static final Logger log = LoggerFactory.getLogger(SmsSender.class);
 
-    public void send(String phoneNumber, String text) {
+    /** @return the provider's message id – null until Twilio is wired */
+    public String send(String phoneNumber, String text) {
         log.info("[SMS not wired] to {}: {}", phoneNumber, text);
+        return null;
     }
 }

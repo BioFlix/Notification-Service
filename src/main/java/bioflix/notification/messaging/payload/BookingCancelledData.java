@@ -3,14 +3,19 @@ package bioflix.notification.messaging.payload;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.time.Instant;
+import java.util.UUID;
 
-/** data of booking.cancelled. reason: e.g. USER, PAYMENT_FAILED, EXPIRED. */
+/**
+ * data of booking.cancelled: bookingId, userId, reason, wasPaid.
+ * reason: USER | PAYMENT_FAILED | EXPIRED | SHOWTIME_CANCELLED. movieTitle / startsAt are optional extras.
+ */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record BookingCancelledData(
         String bookingId,
-        Long userId,
-        String userEmail,
+        UUID userId,
         String reason,
+        Boolean wasPaid,
+        String userEmail,
         String movieTitle,
         Instant startsAt
 ) implements UserScopedData {

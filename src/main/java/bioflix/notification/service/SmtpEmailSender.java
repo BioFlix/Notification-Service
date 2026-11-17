@@ -24,7 +24,7 @@ public class SmtpEmailSender implements EmailSender {
     }
 
     @Override
-    public void send(String to, String subject, String body, List<RenderedMessage.Attachment> attachments) {
+    public String send(String to, String subject, String body, List<RenderedMessage.Attachment> attachments) {
         MimeMessage message = mailSender.createMimeMessage();
         try {
             boolean multipart = attachments != null && !attachments.isEmpty();
@@ -43,5 +43,10 @@ public class SmtpEmailSender implements EmailSender {
             throw new MailPreparationException("Could not build e-mail to " + to, ex);
         }
         mailSender.send(message);
+        try {
+            return message.getMessageID();
+        } catch (MessagingException ex) {
+            return null;
+        }
     }
 }

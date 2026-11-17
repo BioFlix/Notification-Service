@@ -50,6 +50,13 @@
             <artifactId>spring-boot-starter-jackson</artifactId>
         </dependency>
 
+        <!-- QR code PNG for each ticket, generated from the signed qrToken in ticket.issued -->
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>javase</artifactId>
+            <version>3.5.3</version>
+        </dependency>
+
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

@@ -1,9 +1,11 @@
 package bioflix.notification.messaging.payload;
 
-/** Payloads that are about one customer. userEmail is optional in all of them. */
+import java.util.UUID;
+
+/** Payloads that are about one customer. userEmail is optional – if missing, the recipients copy is used. */
 public interface UserScopedData {
 
-    Long userId();
+    UUID userId();
 
     String userEmail();
 }

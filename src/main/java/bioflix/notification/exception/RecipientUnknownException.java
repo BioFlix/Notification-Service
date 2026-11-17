@@ -6,7 +6,7 @@ package bioflix.notification.exception;
  */
 public class RecipientUnknownException extends RuntimeException {
 
-    public RecipientUnknownException(Long userId) {
+    public RecipientUnknownException(java.util.UUID userId) {
         super("No e-mail address known for user " + userId + " (yet)");
     }
 }

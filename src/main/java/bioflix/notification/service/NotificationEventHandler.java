@@ -2,7 +2,7 @@ package bioflix.notification.service;
 
 import bioflix.notification.entity.NotificationChannel;
 import bioflix.notification.entity.NotificationType;
-import bioflix.notification.entity.UserContact;
+import bioflix.notification.entity.Recipient;
 import bioflix.notification.exception.RecipientUnknownException;
 import bioflix.notification.messaging.EventEnvelope;
 import bioflix.notification.messaging.EventParser;
@@ -15,12 +15,15 @@ import bioflix.notification.messaging.payload.PaymentRefundedData;
 import bioflix.notification.messaging.payload.TicketIssuedData;
 import bioflix.notification.messaging.payload.UserEventData;
 import bioflix.notification.messaging.payload.UserScopedData;
+import bioflix.notification.repository.ProcessedEventRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
+import java.util.UUID;
 
 import static bioflix.notification.messaging.EventRoutingKeys.BOOKING_CANCELLED;
 import static bioflix.notification.messaging.EventRoutingKeys.BOOKING_CONFIRMED;
@@ -38,24 +41,38 @@ public class NotificationEventHandler {
     private static final Logger log = LoggerFactory.getLogger(NotificationEventHandler.class);
 
     private final EventParser parser;
-    private final UserContactService userContactService;
+    private final RecipientService recipientService;
     private final NotificationService notificationService;
     private final NotificationTemplates templates;
+    private final ProcessedEventRepository processedEvents;
     private final boolean smsEnabled;
 
-    public NotificationEventHandler(EventParser parser, UserContactService userContactService,
+    public NotificationEventHandler(EventParser parser, RecipientService recipientService,
                                     NotificationService notificationService, NotificationTemplates templates,
+                                    ProcessedEventRepository processedEvents,
                                     @Value("${app.sms.enabled:false}") boolean smsEnabled) {
         this.parser = parser;
-        this.userContactService = userContactService;
+        this.recipientService = recipientService;
         this.notificationService = notificationService;
         this.templates = templates;
+        this.processedEvents = processedEvents;
         this.smsEnabled = smsEnabled;
     }
 
+    /**
+     * Inbox pattern: the eventId is inserted into processed_events first, in this transaction.
+     * A redelivered (or concurrently delivered) copy finds it there and is skipped. If handling fails,
+     * the transaction rolls back, the eventId is released and the retry handles the event again.
+     */
+    @Transactional
     public void handle(EventEnvelope event) {
         log.info("Received {} (eventId {}, correlationId {}, producer {})",
                 event.type(), event.eventId(), event.correlationId(), event.producer());
+
+        if (processedEvents.claim(event.eventId(), event.type()) == 0) {
+            log.info("Duplicate event {} ({}) – already processed, skipping", event.eventId(), event.type());
+            return;
+        }
 
         switch (event.type()) {
             case USER_REGISTERED -> onUserRegistered(event);
@@ -81,14 +98,15 @@ public class NotificationEventHandler {
 
     private void onUserRegistered(EventEnvelope event) {
         UserEventData data = userData(event);
-        userContactService.upsert(data.userId(), data.email(), data.fullName(), data.phone(), event.occurredAt());
+        recipientService.upsert(data.userId(), data.email(), data.fullName(), data.phone(), data.wantsSms(),
+                event.occurredAt());
 
-        Optional<UserContact> contact = userContactService.find(data.userId());
-        if (contact.map(UserContact::isDeleted).orElse(false)) {
+        Optional<Recipient> recipient = recipientService.find(data.userId());
+        if (recipient.map(Recipient::isDeleted).orElse(false)) {
             log.info("User {} is already deleted – no welcome e-mail", data.userId());
             return;
         }
-        String email = firstNonBlank(contact.map(UserContact::getEmail).orElse(null), data.email());
+        String email = firstNonBlank(recipient.map(Recipient::getEmail).orElse(null), data.email());
         if (email == null) {
             log.warn("user.registered for user {} has no e-mail – no welcome e-mail", data.userId());
             return;
@@ -99,12 +117,12 @@ public class NotificationEventHandler {
 
     private void onUserUpdated(EventEnvelope event) {
         UserEventData data = userData(event);
-        userContactService.upsert(data.userId(), data.email(), data.fullName(), data.phone(), event.occurredAt());
+        recipientService.upsert(data.userId(), data.email(), data.fullName(), data.phone(), data.wantsSms(),
+                event.occurredAt());
     }
 
     private void onUserDeleted(EventEnvelope event) {
-        UserEventData data = userData(event);
-        userContactService.markDeleted(data.userId(), event.occurredAt());
+        recipientService.markDeleted(userData(event).userId(), event.occurredAt());
     }
 
     private UserEventData userData(EventEnvelope event) {
@@ -117,32 +135,31 @@ public class NotificationEventHandler {
 
     // ---- booking / payment / ticket: notify the customer ----
 
-    private <T extends UserScopedData> void notifyCustomer(EventEnvelope event, NotificationType type, T data,
+    private <T extends UserScopedData> void notifyCustomer(EventEnvelope event, NotificationType template, T data,
                                                            NotificationRenderer<T> renderer) {
-        Long userId = data.userId();
+        UUID userId = data.userId();
         if (userId == null) {
             throw new InvalidEventException("Event " + event.eventId() + " (" + event.type() + ") has no userId");
         }
 
-        Optional<UserContact> contact = userContactService.find(userId);
-        if (contact.map(UserContact::isDeleted).orElse(false)) {
-            log.info("User {} is deleted – not sending {}", userId, type);
+        Optional<Recipient> recipient = recipientService.find(userId);
+        if (recipient.map(Recipient::isDeleted).orElse(false)) {
+            log.info("User {} is deleted – not sending {}", userId, template);
             return;
         }
 
-        String email = firstNonBlank(data.userEmail(), contact.map(UserContact::getEmail).orElse(null));
+        String email = firstNonBlank(data.userEmail(), recipient.map(Recipient::getEmail).orElse(null));
         if (email == null) {
             // Probably user.registered has not reached us yet – throw so the message is retried
             throw new RecipientUnknownException(userId);
         }
 
-        String fullName = contact.map(UserContact::getFullName).orElse(null);
+        String fullName = recipient.map(Recipient::getFullName).orElse(null);
         RenderedMessage message = renderer.render(data, fullName);
-        notificationService.deliver(event, type, NotificationChannel.EMAIL, userId, email, message);
+        notificationService.deliver(event, template, NotificationChannel.EMAIL, userId, email, message);
 
-        String phone = contact.map(UserContact::getPhone).orElse(null);
-        if (smsEnabled && message.smsText() != null && phone != null && !phone.isBlank()) {
-            notificationService.deliver(event, type, NotificationChannel.SMS, userId, phone, message);
+        if (smsEnabled && message.smsText() != null && recipient.map(Recipient::canReceiveSms).orElse(false)) {
+            notificationService.deliver(event, template, NotificationChannel.SMS, userId, recipient.get().getPhone(), message);
         }
     }
 

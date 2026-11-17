@@ -4,5 +4,6 @@ import java.util.List;
 
 public interface EmailSender {
 
-    void send(String to, String subject, String body, List<RenderedMessage.Attachment> attachments);
+    /** @return the provider's message id (stored as provider_message_id), or null if unknown */
+    String send(String to, String subject, String body, List<RenderedMessage.Attachment> attachments);
 }

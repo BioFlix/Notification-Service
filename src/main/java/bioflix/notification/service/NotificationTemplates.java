@@ -12,8 +12,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -37,6 +37,12 @@ public class NotificationTemplates {
             "EXPIRED", "betalingen ikke blev gennemført i tide",
             "SHOWTIME_CANCELLED", "forestillingen er blevet aflyst");
 
+    private final QrCodeGenerator qrCodeGenerator;
+
+    public NotificationTemplates(QrCodeGenerator qrCodeGenerator) {
+        this.qrCodeGenerator = qrCodeGenerator;
+    }
+
     public RenderedMessage welcome(UserEventData data) {
         return RenderedMessage.email(
                 "Velkommen til BioFlix",
@@ -47,14 +53,15 @@ public class NotificationTemplates {
     }
 
     public RenderedMessage bookingConfirmed(BookingConfirmedData data, String fullName) {
+        Long total = data.total();
         String body = greeting(fullName) + "\n\n"
                 + "Din bestilling er bekræftet.\n\n"
-                + "Film:      " + orDash(data.movieTitle()) + "\n"
-                + "Biograf:   " + orDash(data.cinemaName()) + "\n"
-                + "Sal:       " + orDash(data.hallName()) + "\n"
-                + "Tidspunkt: " + dateTime(data.startsAt()) + "\n"
-                + "Sæder:     " + seats(data.seats()) + "\n"
-                + (data.totalAmount() != null ? "Pris:      " + money(data.totalAmount(), data.currency()) + "\n" : "")
+                + "Film:       " + orDash(data.movieTitle()) + "\n"
+                + optionalLine("Biograf:    ", data.cinemaName())
+                + "Sal:        " + orDash(data.hallName()) + "\n"
+                + "Tidspunkt:  " + dateTime(data.startsAt()) + "\n"
+                + "Sæder:      " + seats(data.seats()) + "\n"
+                + (total != null ? "Pris:       " + money(total, data.currency()) + "\n" : "")
                 + "Bestilling: " + orDash(data.bookingId()) + "\n\n"
                 + "Dine billetter med QR-kode kommer i en separat e-mail."
                 + SIGNATURE;
@@ -65,12 +72,21 @@ public class NotificationTemplates {
 
     public RenderedMessage bookingCancelled(BookingCancelledData data, String fullName) {
         String reason = data.reason() == null ? null : CANCEL_REASONS.get(data.reason());
+        String refund;
+        if (Boolean.TRUE.equals(data.wasPaid())) {
+            refund = "\nDu har betalt, så pengene bliver automatisk refunderet – du får en bekræftelse, når det er sket.";
+        } else if (Boolean.FALSE.equals(data.wasPaid())) {
+            refund = "\nDu er ikke blevet trukket for noget.";
+        } else {
+            refund = "\nHar du betalt, bliver pengene automatisk refunderet – du får en bekræftelse, når det er sket.";
+        }
         String body = greeting(fullName) + "\n\n"
                 + "Din bestilling " + orDash(data.bookingId()) + " er blevet annulleret"
                 + (reason != null ? ", fordi " + reason : "") + ".\n"
-                + (data.movieTitle() != null ? "\nFilm:      " + data.movieTitle() + "\n" : "")
-                + (data.startsAt() != null ? "Tidspunkt: " + dateTime(data.startsAt()) + "\n" : "")
-                + "\nHar du betalt, bliver pengene automatisk refunderet – du får en bekræftelse, når det er sket."
+                + (data.movieTitle() != null || data.startsAt() != null ? "\n" : "")
+                + optionalLine("Film:      ", data.movieTitle())
+                + optionalLine("Tidspunkt: ", data.startsAt())
+                + refund
                 + SIGNATURE;
         String sms = "BioFlix: Din bestilling " + orDash(data.bookingId()) + " er annulleret.";
         return new RenderedMessage("Din bestilling er annulleret", body, sms, List.of());
@@ -84,6 +100,7 @@ public class NotificationTemplates {
                         + "Kvitteringsnr.: " + orDash(data.receiptNumber()) + "\n"
                         + "Beløb:          " + money(data.amount(), data.currency()) + "\n"
                         + "Bestilling:     " + orDash(data.bookingId()) + "\n"
+                        + optionalLine("Kvittering:     ", data.receiptUrl())
                         + SIGNATURE);
     }
 
@@ -92,7 +109,7 @@ public class NotificationTemplates {
                 "Din betaling gik ikke igennem",
                 greeting(fullName) + "\n\n"
                         + "Vi kunne desværre ikke gennemføre betalingen for bestilling " + orDash(data.bookingId()) + ".\n"
-                        + (data.reason() != null ? "Årsag: " + data.reason() + "\n" : "")
+                        + optionalLine("Årsag: ", data.reason())
                         + "\nDine sæder er frigivet. Du er velkommen til at prøve igen."
                         + SIGNATURE);
     }
@@ -113,40 +130,34 @@ public class NotificationTemplates {
         StringBuilder body = new StringBuilder()
                 .append(greeting(fullName)).append("\n\n")
                 .append("Her er dine billetter. Vis QR-koden ved indgangen.\n\n")
-                .append("Film:      ").append(orDash(data.movieTitle())).append('\n')
-                .append("Biograf:   ").append(orDash(data.cinemaName())).append('\n')
-                .append("Sal:       ").append(orDash(data.hallName())).append('\n')
-                .append("Tidspunkt: ").append(dateTime(data.startsAt())).append("\n\n");
+                .append(optionalLine("Film:      ", data.movieTitle()))
+                .append(optionalLine("Biograf:   ", data.cinemaName()))
+                .append(optionalLine("Sal:       ", data.hallName()))
+                .append(optionalLine("Tidspunkt: ", data.startsAt()))
+                .append("Bestilling: ").append(orDash(data.bookingId())).append("\n\n");
 
         List<RenderedMessage.Attachment> attachments = new ArrayList<>();
         for (TicketData ticket : tickets) {
-            body.append("Billet ").append(orDash(ticket.ticketCode()))
+            body.append("Billet ").append(orDash(ticket.ticketNumber()))
                     .append(" – ").append(seat(ticket.row(), ticket.number())).append('\n');
-            byte[] png = decodePng(ticket);
-            if (png != null) {
-                attachments.add(new RenderedMessage.Attachment(
-                        "billet-" + orDash(ticket.ticketCode()) + ".png", "image/png", png));
+            if (ticket.qrToken() == null || ticket.qrToken().isBlank()) {
+                log.warn("Ticket {} has no qrToken – sending the e-mail without a QR code", ticket.ticketNumber());
+                continue;
             }
+            attachments.add(new RenderedMessage.Attachment(
+                    "billet-" + orDash(ticket.ticketNumber()) + ".png", "image/png", qrCodeGenerator.png(ticket.qrToken())));
         }
         body.append(SIGNATURE);
 
-        return new RenderedMessage("Dine billetter – " + orDash(data.movieTitle()), body.toString(), null, attachments);
+        String subject = "Dine billetter" + (data.movieTitle() != null ? " – " + data.movieTitle() : "");
+        return new RenderedMessage(subject, body.toString(), null, attachments);
     }
 
-    private byte[] decodePng(TicketData ticket) {
-        if (ticket.qrPng() == null || ticket.qrPng().isBlank()) {
-            return null;
+    private static String optionalLine(String label, Object value) {
+        if (value == null || (value instanceof String s && s.isBlank())) {
+            return "";
         }
-        String base64 = ticket.qrPng();
-        int comma = base64.indexOf(',');
-        if (base64.startsWith("data:") && comma > 0) {
-            base64 = base64.substring(comma + 1); // accept "data:image/png;base64,..." too
-        }
-        try {
-            return Base64.getDecoder().decode(base64.trim());
-        } catch (IllegalArgumentException ex) {
-            log.warn("Ticket {} has an invalid QR image – sending the e-mail without it", ticket.ticketCode());
-            return null;
-        }
+        String text = value instanceof Instant instant ? dateTime(instant) : value.toString();
+        return label + text + "\n";
     }
 }

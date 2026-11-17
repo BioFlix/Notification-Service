@@ -7,70 +7,71 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
- * Local read-model of users, kept up to date from user.* events.
- * This way notification can find an e-mail address without calling user-service
- * (no synchronous dependency – the services stay loosely coupled).
- *
- * Two rules make the handlers safe when events arrive late or out of order:
- * - lastEventAt: an event older than the last one we applied is ignored.
- * - deleted (tombstone): after user.deleted the row stays, with the personal data removed,
- *   so a late user.updated cannot bring the user back.
+ * Local copy of a user's contact details, built from user.* events, so we never call user-service.
+ * last_event_at: older events are ignored. deleted: tombstone, a late user.updated cannot revive the user.
+ * version: optimistic lock, two user.* events handled at the same time cannot overwrite each other.
  */
 @Entity
-@Table(name = "user_contacts")
-public class UserContact {
+@Table(name = "recipients")
+public class Recipient {
 
-    /** Same id as in user-service – NOT generated here. */
     @Id
-    private Long userId;
+    @Column(name = "user_id")
+    private UUID userId;
 
+    @Column(length = 320)
     private String email;
+
+    @Column(name = "full_name", length = 200)
     private String fullName;
+
+    @Column(length = 32)
     private String phone;
+
+    @Column(name = "sms_opt_in", nullable = false)
+    private boolean smsOptIn;
 
     @Column(nullable = false)
     private boolean deleted;
 
-    /** occurredAt of the last user.* event applied to this row. */
+    @Column(name = "last_event_at")
     private Instant lastEventAt;
 
+    @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    /**
-     * Optimistic lock: two user.* events for the same user handled at the same time (we run several
-     * consumers) cannot overwrite each other – the loser fails, is retried and sees the new state.
-     */
     @Version
     @Column(nullable = false, columnDefinition = "bigint default 0")
     private long version;
 
-    protected UserContact() {
+    protected Recipient() {
         // for JPA
     }
 
-    public UserContact(Long userId) {
+    public Recipient(UUID userId) {
         this.userId = userId;
     }
 
-    /** True if an event that happened at {@code occurredAt} is older than what we already have. */
     public boolean isStale(Instant occurredAt) {
         return lastEventAt != null && occurredAt != null && occurredAt.isBefore(lastEventAt);
     }
 
-    public void update(String email, String fullName, String phone, Instant occurredAt) {
+    public void update(String email, String fullName, String phone, boolean smsOptIn, Instant occurredAt) {
         this.email = email;
         this.fullName = fullName;
         this.phone = phone;
+        this.smsOptIn = smsOptIn;
         touch(occurredAt);
     }
 
-    /** Tombstone: forget the personal data but remember that the user is gone. */
     public void markDeleted(Instant occurredAt) {
         this.email = null;
         this.fullName = null;
         this.phone = null;
+        this.smsOptIn = false;
         this.deleted = true;
         touch(occurredAt);
     }
@@ -82,10 +83,15 @@ public class UserContact {
         this.updatedAt = Instant.now();
     }
 
-    public Long getUserId() { return userId; }
+    public boolean canReceiveSms() {
+        return smsOptIn && !deleted && phone != null && !phone.isBlank();
+    }
+
+    public UUID getUserId() { return userId; }
     public String getEmail() { return email; }
     public String getFullName() { return fullName; }
     public String getPhone() { return phone; }
+    public boolean isSmsOptIn() { return smsOptIn; }
     public boolean isDeleted() { return deleted; }
     public Instant getLastEventAt() { return lastEventAt; }
     public Instant getUpdatedAt() { return updatedAt; }
