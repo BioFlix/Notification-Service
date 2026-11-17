@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * SMS is "not yet wired" in the diagram (Twilio – optional).
+ * SMS is "not yet wired" in the diagram (Twilio – optional). Only used when app.sms.enabled=true.
  * For now we only log. To add Twilio: add com.twilio.sdk:twilio and call Message.creator(...) here.
  */
 @Component

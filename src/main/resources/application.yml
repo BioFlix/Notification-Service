@@ -6,7 +6,7 @@ spring:
     name: notification-service
 
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:5432/notifications_db
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/notifications_db
     username: ${DB_USER:postgres}
     password: ${DB_PASSWORD:postgres}
 
@@ -23,11 +23,38 @@ spring:
     username: ${MAIL_USER:}
     password: ${MAIL_PASSWORD:}
 
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        # Retries wait inside the consumer thread, so use a few consumers –
+        # otherwise one event being retried would hold up all the others.
+        concurrency: 3
+        max-concurrency: 10
+        # A message that still fails after the retries is NOT put back on the queue,
+        # it is dead-lettered (see RabbitConfig) instead.
+        default-requeue-rejected: false
+        retry:
+          # Retry with backoff: 2s, 4s, 8s, 16s -> then FAILED + dead-letter queue
+          enabled: true
+          max-retries: 4
+          initial-interval: 2s
+          multiplier: 2
+          max-interval: 30s
+
 app:
+  rabbitmq:
+    exchange: cinema.events
+    queue: notification-service.events
+    dead-letter-exchange: cinema.events.dlx
+    dead-letter-queue: notification-service.events.dlq
   mail:
-    from: ${MAIL_FROM:no-reply@cinema.local}
+    from: ${MAIL_FROM:no-reply@bioflix.local}
   sms:
-    enabled: false   # Twilio is optional / not wired yet
+    enabled: ${SMS_ENABLED:true}   # Twilio is optional / not wired yet
 
 management:
   endpoints:
