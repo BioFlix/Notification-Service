@@ -25,17 +25,75 @@ Er en port optaget, kan den ændres: `MAILPIT_UI_PORT=8026 MAILPIT_SMTP_PORT=102
 Køres servicen fra IntelliJ i stedet, skal Postgres, RabbitMQ og Mailpit køre på `localhost` (standardporte),
 eller sæt `DB_HOST`, `DB_PORT`, `RABBITMQ_HOST`, `MAIL_HOST` osv.
 
+### Kør fra IntelliJ
+Start afhængighederne fra denne mappe, og kør derefter `NotificationServiceApplication`:
+```bash
+docker compose up -d notification-db rabbitmq mailpit
+```
+Start RabbitMQ **før** servicen – ellers logger Spring `Connection refused` og prøver igen indtil brokeren er oppe.
+Med `SMS_ENABLED=true` i run configurationens environment variables logges SMS’er (`[SMS not wired]`).
+
 ### Prøv det af uden de andre services
-Åbn RabbitMQ UI → *Exchanges* → `cinema.events` → *Publish message*:
-- Routing key: `user.registered`
-- Properties: `content_type = application/json`
-- Payload (nyt `eventId` hver gang):
-  ```json
-  {"eventId":"2f0c7b9e-0f4e-4a2b-9a51-1c2d3e4f5a6b","type":"user.registered","version":1,"occurredAt":"2026-11-17T10:00:00Z",
-   "producer":"manual","data":{"userId":"a91e44f0-1111-4c55-9a43-5d1b7f0e9a21","email":"anna@example.com","fullName":"Anna Hansen"}}
+Events publiceres i hånden: RabbitMQ UI (http://localhost:15672, guest/guest) → *Exchanges* → `cinema.events` →
+*Publish message*:
+- **Routing key:** event-typen, fx `user.registered`
+- **Properties:** `content_type = application/json`
+- **Payload:** JSON’en nedenfor. **Nyt `eventId` hver gang** – et genbrugt id behandles som duplikat og sender intet.
+
+Eksemplerne bruger Anna med `userId` `a91e44f0-1111-4c55-9a43-5d1b7f0e9a21`. Kører user-service, så brug i stedet
+hendes rigtige UUID (`ANNA_ID` fra user-service’s README) og spring A over – den kommer automatisk.
+
+**A. Velkomstmail** – routing key `user.registered`:
+```json
+{"eventId":"11111111-1111-1111-1111-000000000001","type":"user.registered","version":1,"occurredAt":"2026-11-17T10:00:00Z","producer":"manual","data":{"userId":"a91e44f0-1111-4c55-9a43-5d1b7f0e9a21","email":"anna@example.com","fullName":"Anna Hansen","phone":"+4512345678","smsOptIn":true}}
+```
+
+**B. Booking bekræftet** – routing key `booking.confirmed`. Prisen (310,00 DKK) regnes ud fra `seats[].price`:
+```json
+{"eventId":"11111111-1111-1111-1111-000000000002","type":"booking.confirmed","version":1,"occurredAt":"2026-11-17T12:00:00Z","producer":"manual","correlationId":"b-1","data":{"bookingId":"b-1","userId":"a91e44f0-1111-4c55-9a43-5d1b7f0e9a21","showtimeId":"66f0c7","movieTitle":"Dune: Part Two","hallName":"Sal 3","startsAt":"2026-11-20T17:30:00Z","seats":[{"row":"F","number":7,"type":"STANDARD","price":13500},{"row":"F","number":8,"type":"VIP","price":17500}]}}
+```
+
+**C. Duplikat** – publicér B igen med samme `eventId`. Der må ikke komme en ny mail.
+
+**D. Billetter med QR-kode** – routing key `ticket.issued`. `qrToken` kan være vilkårlig tekst; servicen laver QR-billedet:
+```json
+{"eventId":"11111111-1111-1111-1111-000000000003","type":"ticket.issued","version":1,"occurredAt":"2026-11-17T12:01:00Z","producer":"manual","data":{"bookingId":"b-1","userId":"a91e44f0-1111-4c55-9a43-5d1b7f0e9a21","tickets":[{"ticketNumber":"TK-7F3K","row":"F","number":7,"qrToken":"signed-token-123"}]}}
+```
+
+**E. Annullering med refusion** – routing key `booking.cancelled`. `wasPaid: true` giver teksten om automatisk refusion:
+```json
+{"eventId":"11111111-1111-1111-1111-000000000004","type":"booking.cancelled","version":1,"occurredAt":"2026-11-17T12:02:00Z","producer":"manual","data":{"bookingId":"b-1","userId":"a91e44f0-1111-4c55-9a43-5d1b7f0e9a21","reason":"USER","wasPaid":true}}
+```
+
+**F. Ugyldig besked** – routing key `booking.confirmed`, payload `hello`. Går direkte i DLQ uden retries.
+
+**G. Ukendt version** – publicér B med nyt `eventId` og `"version":2`. Går direkte i DLQ.
+
+**H. Ukendt bruger** – publicér E med nyt `eventId` og et `userId` der ikke findes. Prøves igen i ca. 30 sek.
+(2/4/8/16 s) og ender derefter i DLQ.
+
+**I. Slettet bruger** – routing key `user.deleted`:
+```json
+{"eventId":"11111111-1111-1111-1111-000000000005","type":"user.deleted","version":1,"occurredAt":"2026-11-17T12:03:00Z","producer":"manual","data":{"userId":"a91e44f0-1111-4c55-9a43-5d1b7f0e9a21"}}
+```
+Publicér derefter B med nyt `eventId` – der må ikke sendes nogen mail.
+
+**SMS** – med `SMS_ENABLED=true` giver A + B en `[SMS not wired]`-linje i konsollen. Uden `smsOptIn` sendes ingen SMS.
+
+### Hvor kan man se resultatet
+- **Mails:** Mailpit, http://localhost:8025.
+- **Notifikationslog for en bruger** – hver række skal have `status: SENT` og `attempts: 1`:
+  ```bash
+  curl -H "X-User-Id: a91e44f0-1111-4c55-9a43-5d1b7f0e9a21" localhost:8086/api/notifications/me
   ```
-Velkomstmailen dukker op i Mailpit, og `GET /api/notifications/me` med `X-User-Id: a91e44f0-1111-4c55-9a43-5d1b7f0e9a21`
-viser den som `SENT`. Kører user-service mod samme RabbitMQ, kommer `user.*`-events automatisk.
+- **Som admin** (status `QUEUED`, `SENT` eller `FAILED`):
+  ```bash
+  curl -H "X-User-Role: ADMIN" "localhost:8086/api/notifications?status=FAILED"
+  ```
+- **Dead-letter queue:** RabbitMQ UI → *Queues* → `notification-service.events.dlq` → *Get messages* (F, G og H).
+- **Konsollen:** hvert event logger `Received …` og `Sent …`, eller `Rejecting` / `Giving up` ved fejl.
+
+Scenarierne kan bruges direkte som black-box-testcases: event ind, forventet mail og status ud.
 
 ## Arkitektur
 
